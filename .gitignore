@@ -1,0 +1,15 @@
+# Secrets and local databases
+backend/.env
+frontend/.env
+*.db
+*.db-wal
+*.db-shm
+
+# Dependencies and generated files
+**/.venv/
+**/node_modules/
+**/dist/
+**/__pycache__/
+**/.pytest_cache/
+*.pyc
+.DS_Store
