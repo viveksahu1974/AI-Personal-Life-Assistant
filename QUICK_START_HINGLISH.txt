@@ -1,0 +1,30 @@
+LIFEPILOT PROJECT -- WINDOWS PAR KAISE RUN KAREIN
+===============================================
+
+1. LifePilot.zip ko extract karo.
+2. Python 3.10+ aur Node.js 20.19+ install kar lo.
+3. Project folder mein START_BACKEND.bat ko double-click karo.
+   Pehli baar packages install honge. Window khuli rehne do.
+4. START_FRONTEND.bat ko double-click karo.
+   Ye React packages install karega. Iski window bhi khuli rehne do.
+5. Chrome browser mein ye khol do: http://127.0.0.1:5173
+
+START_BACKEND.bat aur START_FRONTEND.bat dono simultaneously running hone chahiye.
+
+KYA KYA CHALEGA?
+- Tasks create, edit, delete aur complete kar sakte ho
+- Time-based reminders set kar sakte ho
+- Browser open hone par notification + reminder alert
+- Expense aur monthly budget track kar sakte ho
+- Assistant se Plan my day, budget, reminders pooch sakte ho
+- Data SQLite database mein save hota hai
+
+IMPORTANT:
+- Bina key ke assistant rule-based/offline hai. True generative AI ke liye
+  backend/.env mein OPENAI_API_KEY add karo (optional, paid API ho sakti hai).
+- Browser band hone par email reminder chahiye to backend/.env mein SMTP
+  configure karo, aur Python backend running rakho.
+- Ye local single-user project hai; public hosting se pehle login/security add karna hoga.
+
+Backend check: http://127.0.0.1:8000/docs
+Full details: README.md
