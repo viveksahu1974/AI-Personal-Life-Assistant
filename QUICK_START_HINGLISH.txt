@@ -28,3 +28,9 @@ IMPORTANT:
 
 Backend check: http://127.0.0.1:8000/docs
 Full details: README.md
+
+NEW v2.0 EXPENSE TRACKER:
+- Standalone HTML: docs/index.html, browser me directly open karo.
+- Full app: Expenses tab me Dashboard + Transactions, Credit/Debit,
+  Create/Edit/Delete/Undo, PDF/Excel/CSV exports.
+- Detailed instructions: EXPENSE_TRACKER_START_HERE_HINGLISH.txt
