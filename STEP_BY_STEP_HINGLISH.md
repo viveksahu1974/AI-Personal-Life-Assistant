@@ -90,3 +90,10 @@ python -m pytest -q
 ## Step 10: Future versions
 
 Multi-user login, voice assistant, Google Calendar sync, recurring reminders, truly background mobile push, cloud hosting aur analytics charts future enhancements hain. Current local MVP ke features ko unimplemented capabilities ke saath confuse mat karo.
+
+
+## v2.0 Expense Tracker kaise use karein
+
+Standalone website `docs/index.html` ko Chrome/Edge me open karo. Create -> Debit/Credit -> 13 categories me se option -> Save. Dashboard me summary aur charts dikhenge. Galat entry pe Undo. Reports me Excel/CSV/JSON aur browser Print -> Save as PDF.
+
+Full React + FastAPI version ke liye START_BACKEND.bat aur START_FRONTEND.bat chalao, `http://127.0.0.1:5173` pe jao, Expenses select karo. PDF/XLSX/CSV seedha website se download hoga. SQLite me purana data preserved rahega.
