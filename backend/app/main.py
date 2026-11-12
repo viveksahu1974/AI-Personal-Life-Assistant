@@ -5,6 +5,9 @@ No account authentication is included. Run on localhost only until secured.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
+import json
 import logging
 import os
 import re
@@ -20,6 +23,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -109,6 +113,25 @@ def initialize_db():
             amount REAL NOT NULL CHECK(amount >= 0)
         );
         ''')
+        # Non-destructive migration: older LifePilot databases contain debit-only expenses.
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(expenses)')}
+        for column, ddl in (
+            ('entry_type', "TEXT NOT NULL DEFAULT 'debit'"),
+            ('notes', "TEXT NOT NULL DEFAULT ''"),
+            ('deleted_at', 'TEXT'),
+        ):
+            if column not in columns:
+                conn.execute(f'ALTER TABLE expenses ADD COLUMN {column} {ddl}')
+        conn.execute('''CREATE TABLE IF NOT EXISTS expense_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT NOT NULL,
+            entry_id INTEGER NOT NULL,
+            before_json TEXT,
+            after_json TEXT,
+            undone INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )''')
+        conn.execute('CREATE INDEX IF NOT EXISTS ix_expense_actions_active ON expense_actions(undone, id)')
 
 
 class TaskIn(BaseModel):
@@ -180,10 +203,19 @@ class ReminderIn(BaseModel):
         return value
 
 
+EXPENSE_CATEGORIES = (
+    'Food', 'Study', 'Travel', 'Shopping', 'Bank', 'House Rent', 'Personal',
+    'Gym', 'Health', 'Drink', 'Petrol', 'Clothes', 'Other',
+    'Bills', 'Education',  # retained for old records
+)
+
+
 class ExpenseIn(BaseModel):
     title: str = Field(min_length=1, max_length=150)
     amount: float = Field(gt=0, le=100000000)
-    category: Literal['Food', 'Travel', 'Shopping', 'Bills', 'Education', 'Health', 'Other'] = 'Other'
+    category: str = 'Other'
+    entry_type: Literal['debit', 'credit'] = 'debit'
+    notes: str = Field(default='', max_length=600)
     spent_on: date = Field(default_factory=date.today)
 
     @field_validator('title')
@@ -192,6 +224,36 @@ class ExpenseIn(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError('Title cannot be empty')
+        return value
+
+    @field_validator('category')
+    @classmethod
+    def validate_category(cls, value):
+        if value not in EXPENSE_CATEGORIES:
+            raise ValueError('Choose a supported category')
+        return value
+
+
+class ExpensePatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=150)
+    amount: float | None = Field(default=None, gt=0, le=100000000)
+    category: str | None = None
+    entry_type: Literal['debit', 'credit'] | None = None
+    notes: str | None = Field(default=None, max_length=600)
+    spent_on: date | None = None
+
+    @field_validator('title')
+    @classmethod
+    def strip_title(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError('Title cannot be empty')
+        return value.strip() if value is not None else value
+
+    @field_validator('category')
+    @classmethod
+    def validate_category(cls, value):
+        if value is not None and value not in EXPENSE_CATEGORIES:
+            raise ValueError('Choose a supported category')
         return value
 
 
@@ -375,32 +437,225 @@ def delete_reminder(reminder_id: int):
     return {'ok': True}
 
 
+def _log_expense_action(conn, action: str, entry_id: int, before: dict | None, after: dict | None):
+    conn.execute('''INSERT INTO expense_actions (action, entry_id, before_json, after_json, created_at)
+        VALUES (?, ?, ?, ?, ?)''', (action, entry_id,
+        json.dumps(before) if before else None, json.dumps(after) if after else None, timestamp()))
+
+
+def _finance_rows(conn, month: str | None):
+    if month:
+        validate_month(month)
+        return [dict(x) for x in conn.execute('''SELECT * FROM expenses WHERE deleted_at IS NULL
+            AND substr(spent_on, 1, 7) = ? ORDER BY spent_on DESC, id DESC''', (month,)).fetchall()]
+    return [dict(x) for x in conn.execute('''SELECT * FROM expenses WHERE deleted_at IS NULL
+            ORDER BY spent_on DESC, id DESC''').fetchall()]
+
+
+def _finance_summary(rows):
+    credit = round(sum(float(x['amount']) for x in rows if x['entry_type'] == 'credit'), 2)
+    debit = round(sum(float(x['amount']) for x in rows if x['entry_type'] == 'debit'), 2)
+    categories = {}
+    for x in rows:
+        if x['entry_type'] == 'debit':
+            categories[x['category']] = round(categories.get(x['category'], 0) + float(x['amount']), 2)
+    return {
+        'credit': credit, 'debit': debit, 'balance': round(credit - debit, 2),
+        'count': len(rows),
+        'categories': [{'category': k, 'total': v} for k, v in sorted(categories.items(), key=lambda x: -x[1])],
+    }
+
+
+@app.get('/api/expenses/categories')
+def expense_categories():
+    return {'categories': list(EXPENSE_CATEGORIES[:13])}
+
+
+@app.get('/api/expenses/summary')
+def expense_summary(month: str | None = None):
+    with connect() as conn:
+        rows = _finance_rows(conn, month)
+        summary = _finance_summary(rows)
+        budget_row = conn.execute('SELECT amount FROM budgets WHERE month = ?', (month,)).fetchone() if month else None
+        summary['budget'] = budget_row['amount'] if budget_row else 0
+        days = {}
+        for row in rows:
+            day = row['spent_on']
+            if day not in days:
+                days[day] = {'date': day, 'credit': 0, 'debit': 0}
+            days[day][row['entry_type']] += row['amount']
+        summary['daily'] = [{**d, 'credit': round(d['credit'], 2), 'debit': round(d['debit'], 2)}
+                            for d in sorted(days.values(), key=lambda x: x['date'])]
+        return summary
+
+
+@app.get('/api/expenses/undo-status')
+def expense_undo_status():
+    with connect() as conn:
+        last = conn.execute('''SELECT id, action, entry_id FROM expense_actions
+            WHERE undone = 0 ORDER BY id DESC LIMIT 1''').fetchone()
+    return {'available': bool(last), 'action': last['action'] if last else None}
+
+
 @app.get('/api/expenses')
 def list_expenses(month: str | None = None):
     with connect() as conn:
-        if month:
-            validate_month(month)
-            rows = conn.execute('SELECT * FROM expenses WHERE substr(spent_on, 1, 7) = ? ORDER BY spent_on DESC, id DESC', (month,)).fetchall()
-        else:
-            rows = conn.execute('SELECT * FROM expenses ORDER BY spent_on DESC, id DESC LIMIT 500').fetchall()
-        return [dict(row) for row in rows]
+        return _finance_rows(conn, month)
 
 
 @app.post('/api/expenses', status_code=201)
 def create_expense(expense: ExpenseIn):
     with connect() as conn:
-        cur = conn.execute('INSERT INTO expenses (title, amount, category, spent_on, created_at) VALUES (?, ?, ?, ?, ?)',
-            (expense.title, round(expense.amount, 2), expense.category, expense.spent_on.isoformat(), timestamp()))
-        return to_dict(conn.execute('SELECT * FROM expenses WHERE id = ?', (cur.lastrowid,)).fetchone())
+        cur = conn.execute('''INSERT INTO expenses (title, amount, category, spent_on, created_at, entry_type, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?)''', (expense.title, round(expense.amount, 2),
+            expense.category, expense.spent_on.isoformat(), timestamp(), expense.entry_type, expense.notes))
+        item = to_dict(conn.execute('SELECT * FROM expenses WHERE id = ?', (cur.lastrowid,)).fetchone())
+        _log_expense_action(conn, 'create', item['id'], None, item)
+        return item
+
+
+@app.patch('/api/expenses/{expense_id}')
+def update_expense(expense_id: int, patch: ExpensePatch):
+    values = patch.model_dump(exclude_unset=True)
+    if not values:
+        raise HTTPException(422, 'No changes provided')
+    if any(v is None for v in values.values()):
+        raise HTTPException(422, 'Expense fields cannot be null')
+    if 'spent_on' in values:
+        values['spent_on'] = values['spent_on'].isoformat()
+    if 'amount' in values:
+        values['amount'] = round(values['amount'], 2)
+    with connect() as conn:
+        old = to_dict(conn.execute('SELECT * FROM expenses WHERE id=? AND deleted_at IS NULL', (expense_id,)).fetchone())
+        if not old:
+            raise HTTPException(404, 'Transaction not found')
+        conn.execute('UPDATE expenses SET ' + ', '.join(f'{k}=?' for k in values) + ' WHERE id=?', (*values.values(), expense_id))
+        new = to_dict(conn.execute('SELECT * FROM expenses WHERE id=?', (expense_id,)).fetchone())
+        _log_expense_action(conn, 'edit', expense_id, old, new)
+    return new
 
 
 @app.delete('/api/expenses/{expense_id}')
 def delete_expense(expense_id: int):
     with connect() as conn:
-        cur = conn.execute('DELETE FROM expenses WHERE id = ?', (expense_id,))
-        if cur.rowcount == 0:
-            raise HTTPException(404, 'Expense not found')
-    return {'ok': True}
+        old = to_dict(conn.execute('SELECT * FROM expenses WHERE id=? AND deleted_at IS NULL', (expense_id,)).fetchone())
+        if not old:
+            raise HTTPException(404, 'Transaction not found')
+        conn.execute('UPDATE expenses SET deleted_at = ? WHERE id = ?', (timestamp(), expense_id))
+        new = to_dict(conn.execute('SELECT * FROM expenses WHERE id=?', (expense_id,)).fetchone())
+        _log_expense_action(conn, 'delete', expense_id, old, new)
+    return {'ok': True, 'can_undo': True}
+
+
+@app.post('/api/expenses/undo')
+def undo_expense():
+    # Server-backed undo survives browser reload and reverses the latest edit/create/delete.
+    with connect() as conn:
+        row = conn.execute('SELECT * FROM expense_actions WHERE undone=0 ORDER BY id DESC LIMIT 1').fetchone()
+        if row is None:
+            raise HTTPException(404, 'Nothing to undo')
+        before = json.loads(row['before_json']) if row['before_json'] else None
+        if row['action'] == 'create':
+            conn.execute('UPDATE expenses SET deleted_at=? WHERE id=?', (timestamp(), row['entry_id']))
+        else:
+            if before is None:
+                raise HTTPException(409, 'Cannot undo this action')
+            cols = ['title', 'amount', 'category', 'spent_on', 'created_at', 'entry_type', 'notes', 'deleted_at']
+            conn.execute('UPDATE expenses SET ' + ', '.join(f'{col}=?' for col in cols) + ' WHERE id=?',
+                tuple(before[col] for col in cols) + (row['entry_id'],))
+        conn.execute('UPDATE expense_actions SET undone=1 WHERE id=?', (row['id'],))
+    return {'ok': True, 'reverted': row['action']}
+
+
+@app.get('/api/expenses/export')
+def export_expenses(format: Literal['csv', 'xlsx', 'pdf'] = 'csv', month: str | None = None):
+    if month:
+        validate_month(month)
+    with connect() as conn:
+        rows = _finance_rows(conn, month)
+    summary = _finance_summary(rows)
+    period = month or 'all-time'
+    safe_filename = f'LifePilot_Transactions_{period}.{format}'
+    headers = ['Date', 'Type', 'Category', 'Title', 'Amount (INR)', 'Notes']
+    items = [[x['spent_on'], x['entry_type'].title(), x['category'], x['title'], x['amount'], x['notes']] for x in rows]
+    if format == 'csv':
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(['LifePilot - Transaction Report', period])
+        writer.writerow(['Total Credit', summary['credit'], 'Total Debit', summary['debit'], 'Net Movement', summary['balance']])
+        writer.writerow([])
+        writer.writerow(headers)
+        for item in items:
+            # Prevent spreadsheet formula execution when importing CSV into Excel.
+            writer.writerow(["'" + str(v) if isinstance(v, str) and v.startswith(('=', '+', '-', '@', '\t', '\r')) else v for v in item])
+        data = ('\ufeff' + output.getvalue()).encode('utf-8')
+        media = 'text/csv; charset=utf-8'
+    elif format == 'xlsx':
+        import xlsxwriter
+        buffer = io.BytesIO()
+        workbook = xlsxwriter.Workbook(buffer, {'in_memory': True})
+        summary_tab = workbook.add_worksheet('Dashboard')
+        records_tab = workbook.add_worksheet('Transactions')
+        title_format = workbook.add_format({'bold': True, 'font_size': 20, 'font_color': '#342568'})
+        head_format = workbook.add_format({'bold': True, 'bg_color': '#ede9fe', 'font_color': '#43346c', 'border': 1, 'border_color': '#ddd6fe'})
+        money_format = workbook.add_format({'num_format': '"INR "#,##0.00;[Red]("INR "#,##0.00)'})
+        summary_tab.set_column('A:A', 25); summary_tab.set_column('B:B', 20)
+        summary_tab.write('A1', 'LifePilot Financial Dashboard', title_format)
+        summary_tab.write('A3', 'Period'); summary_tab.write('B3', period)
+        for i, (label, amount) in enumerate((('Credit (money in)', summary['credit']), ('Debit (money out)', summary['debit']), ('Net movement', summary['balance']))):
+            summary_tab.write(4 + i, 0, label, head_format)
+            summary_tab.write_number(4 + i, 1, amount, money_format)
+        summary_tab.write_row('A10', ['Spending category', 'Total debit'], head_format)
+        for i, c in enumerate(summary['categories'], 10):
+            summary_tab.write(i, 0, c['category']); summary_tab.write_number(i, 1, c['total'], money_format)
+        records_tab.set_column('A:A', 15); records_tab.set_column('B:C', 15)
+        records_tab.set_column('D:D', 34); records_tab.set_column('E:E', 19); records_tab.set_column('F:F', 52)
+        records_tab.freeze_panes(1, 0); records_tab.autofilter(0, 0, max(1, len(items)), 5)
+        records_tab.write_row(0, 0, headers, head_format)
+        for idx, item in enumerate(items, 1):
+            for col, val in enumerate(item):
+                if col == 4:
+                    records_tab.write_number(idx, col, float(val), money_format)
+                else:
+                    # Explicit string writes prevent formula injection.
+                    records_tab.write_string(idx, col, str(val))
+        workbook.close(); data = buffer.getvalue()
+        media = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    else:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, LongTable, TableStyle
+        from xml.sax.saxutils import escape
+        buffer = io.BytesIO()
+        document = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=16*mm, rightMargin=16*mm, topMargin=17*mm, bottomMargin=16*mm)
+        styles = getSampleStyleSheet()
+        story = [Paragraph('LifePilot | Transaction Report', styles['Title']),
+                 Paragraph(f'Period: {escape(period)}', styles['Normal']), Spacer(1, 9),
+                 Paragraph(f'Credit: INR {summary["credit"]:,.2f}     Debit: INR {summary["debit"]:,.2f}     Net movement: INR {summary["balance"]:,.2f}', styles['Heading3']), Spacer(1, 12)]
+        cells = [['Date', 'Type', 'Category', 'Description', 'Amount INR']]
+        for item in items:
+            cells.append([Paragraph(escape(str(item[0])), styles['BodyText']),
+                          Paragraph(escape(str(item[1])), styles['BodyText']),
+                          Paragraph(escape(str(item[2])), styles['BodyText']),
+                          Paragraph(escape(str(item[3])), styles['BodyText']),
+                          f'{float(item[4]):,.2f}'])
+        if not items:
+            cells.append(['-', '-', '-', 'No transactions this period', '-'])
+        table = LongTable(cells, colWidths=[26*mm, 20*mm, 32*mm, 69*mm, 30*mm], repeatRows=1)
+        table.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#ede9fe')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#43346c')),
+            ('GRID', (0, 0), (-1, -1), .3, colors.HexColor('#e5e7eb')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#fafaff')]),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6), ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 6), ('BOTTOMPADDING', (0, 0), (-1, -1), 6)]))
+        story.append(table)
+        document.build(story); data = buffer.getvalue()
+        media = 'application/pdf'
+    return StreamingResponse(io.BytesIO(data), media_type=media,
+        headers={'Content-Disposition': f'attachment; filename="{safe_filename}"'})
 
 
 @app.get('/api/budgets/{month}')
@@ -431,13 +686,13 @@ def dashboard(month: str | None = None):
         focus = [dict(row) for row in conn.execute('''SELECT * FROM tasks WHERE completed = 0
            ORDER BY CASE priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END,
            due_at IS NULL, due_at ASC LIMIT 5''').fetchall()]
-        monthly = conn.execute('SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE substr(spent_on, 1, 7) = ?', (month,)).fetchone()['total']
+        monthly = conn.execute("SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE deleted_at IS NULL AND entry_type = 'debit' AND substr(spent_on, 1, 7) = ?", (month,)).fetchone()['total']
         categories = [dict(row) for row in conn.execute('''SELECT category, ROUND(SUM(amount), 2) AS total FROM expenses
-           WHERE substr(spent_on, 1, 7) = ? GROUP BY category ORDER BY total DESC''', (month,)).fetchall()]
+           WHERE deleted_at IS NULL AND entry_type = 'debit' AND substr(spent_on, 1, 7) = ? GROUP BY category ORDER BY total DESC''', (month,)).fetchall()]
         budget = conn.execute('SELECT amount FROM budgets WHERE month = ?', (month,)).fetchone()
         upcoming_reminders = [dict(row) for row in conn.execute('''SELECT * FROM reminders WHERE acknowledged_at IS NULL
            ORDER BY remind_at LIMIT 4''').fetchall()]
-        recent_expenses = [dict(row) for row in conn.execute('''SELECT * FROM expenses WHERE substr(spent_on, 1, 7) = ?
+        recent_expenses = [dict(row) for row in conn.execute('''SELECT * FROM expenses WHERE deleted_at IS NULL AND substr(spent_on, 1, 7) = ?
             ORDER BY spent_on DESC, id DESC LIMIT 4''', (month,)).fetchall()]
     return {
         'month': month,
