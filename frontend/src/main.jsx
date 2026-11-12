@@ -5,9 +5,9 @@ import {
   Check, CheckCheck, CheckCircle2, ChevronRight, Circle, Clock3, CreditCard,
   DollarSign, Edit3, GraduationCap, Heart, LayoutDashboard, Menu, MessageCircle,
   MoreHorizontal, Plus, Search, Send, Settings2, ShieldCheck, Sparkles,
-  Target, Trash2, Wallet, X, Zap, AlertTriangle, Play, RefreshCw, CalendarClock,
+  Target, Trash2, Wallet, X, Zap, AlertTriangle, Play, RefreshCw, CalendarClock, Download, Undo2, TrendingUp, TrendingDown, Filter, FileSpreadsheet, FileText, ReceiptText, BarChart3,
 } from 'lucide-react'
-import { api, monthLocal, todayLocal, niceDate, rupees, toIso, toLocalInput } from './api'
+import { api, downloadExpenseReport, monthLocal, todayLocal, niceDate, rupees, toIso, toLocalInput } from './api'
 import './style.css'
 
 const nav = [
@@ -20,7 +20,8 @@ const nav = [
 const categoryIcons = { Personal: Heart, College: GraduationCap, Work: Target, Health: Activity }
 const defaultTask = { title: '', notes: '', priority: 'Medium', category: 'Personal', due_at: '' }
 const emptyReminder = { title: '', message: '', remind_at: '' }
-const emptyExpense = { title: '', amount: '', category: 'Food', spent_on: todayLocal() }
+const expenseCategories = ['Food','Study','Travel','Shopping','Bank','House Rent','Personal','Gym','Health','Drink','Petrol','Clothes','Other','Bills','Education']
+const emptyExpense = () => ({ title: '', amount: '', category: 'Food', entry_type: 'debit', notes: '', spent_on: todayLocal() })
 
 function Pill({ children, className = '' }) { return <span className={`pill ${className}`}>{children}</span> }
 function Empty({ icon: Icon = Circle, title, text }) { return <div className="empty"><span className="empty-icon"><Icon size={24}/></span><h3>{title}</h3><p>{text}</p></div> }
@@ -112,22 +113,78 @@ function ReminderScreen({ reminders, onCreate, onAck, onDelete, onEnableNotify, 
   </>
 }
 
-function ExpenseScreen({ expenses, budget, month, setMonth, dashboard, onCreate, onDelete, onBudget }) {
-  const [form,setForm]=useState(emptyExpense)
-  const [limit,setLimit]=useState(String(budget?.amount || ''))
-  const [saving,setSaving]=useState(false)
-  useEffect(()=>setLimit(String(budget?.amount || '')),[budget?.amount])
-  const spent=dashboard?.spending || 0
-  const remaining=(budget?.amount||0)-spent
-  const pct=budget?.amount ? Math.min(100, spent/budget.amount*100) : 0
-  const submit=async e=>{e.preventDefault();setSaving(true);try{await onCreate({...form, amount:Number(form.amount)});setForm({...emptyExpense,spent_on:todayLocal()})}finally{setSaving(false)}}
-  return <><SectionHeading eyebrow="MONEY MADE SIMPLE" title="Expense tracker" subtitle="Understand where your money goes and stay in control." action={<input className="month-input" aria-label="Select expense month" type="month" value={month} onChange={e=>setMonth(e.target.value)}/>}/>
-    <div className="finance-grid"><div className="finance-stat"><span><CreditCard size={20}/></span><p>Spent this month</p><strong>{rupees(spent)}</strong><small>From {expenses.length} transactions</small></div><div className="finance-stat"><span><Target size={20}/></span><p>Monthly budget</p><strong>{budget?.amount ? rupees(budget.amount) : 'Not set'}</strong><small>Customize your limit below</small></div><div className="finance-stat"><span><Wallet size={20}/></span><p>Budget remaining</p><strong className={remaining<0?'overdue':''}>{budget?.amount ? rupees(remaining) : '—'}</strong><small>{budget?.amount ? `${Math.round(pct)}% used` : 'Set a budget first'}</small></div></div>
-    <div className="work-grid"><div className="panel form-panel"><div className="panel-heading"><div><h2>Add an expense</h2><p>Every rupee counts</p></div><span className="form-top-icon"><Plus size={21}/></span></div><form className="form-stack" onSubmit={submit}><label>Expense name<input required maxLength={150} placeholder="e.g. Metro recharge" value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></label><div className="form-pair"><label>Amount (₹)<input type="number" min="0.01" max="100000000" step="0.01" required placeholder="250" value={form.amount} onChange={e=>setForm({...form,amount:e.target.value})}/></label><label>Category<select value={form.category} onChange={e=>setForm({...form,category:e.target.value})}>{['Food','Travel','Shopping','Bills','Education','Health','Other'].map(c=><option key={c}>{c}</option>)}</select></label></div><label>Date<input type="date" required value={form.spent_on} onChange={e=>setForm({...form,spent_on:e.target.value})}/></label><button className="button button-primary" type="submit" disabled={saving}>{saving?'Saving...':'Save expense'} <ArrowRight size={17}/></button></form>
-      <div className="budget-form"><h3>Monthly spending limit</h3><form onSubmit={e=>{e.preventDefault();onBudget(Number(limit))}}><input type="number" step="0.01" min="0" max="100000000" placeholder="Set your budget in ₹" value={limit} onChange={e=>setLimit(e.target.value)} required/><button type="submit" className="button button-soft">Save budget</button></form><div className="budget-track"><div style={{width:`${pct}%`,background:remaining<0?'#ef876b':undefined}}/></div><p>{budget?.amount ? `${rupees(spent)} of ${rupees(budget.amount)} used` : 'No monthly limit set yet.'}</p></div>
-    </div><div className="panel tasks-panel"><div className="panel-heading"><div><h2>Transaction history</h2><p>Your spending for {month}</p></div></div>{expenses.length?<div className="expense-list">{expenses.map(x=><div className="expense-row" key={x.id}><span className="expense-icon"><ArrowUpRight size={19}/></span><div><strong>{x.title}</strong><small>{x.category} · {new Date(x.spent_on+'T12:00:00').toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})}</small></div><strong className="expense-amount">−{rupees(x.amount)}</strong><IconButton icon={Trash2} label="Delete expense" onClick={()=>onDelete(x)}/></div>)}</div>:<Empty icon={Wallet} title="No expenses this month" text="Start tracking to see where your money goes."/>}</div></div>
+function ExpenseScreen({ expenses, budget, month, setMonth, summary, onCreate, onUpdate, onDelete, onBudget, onUndo, undoAvailable }) {
+  const [view, setView] = useState('dashboard')
+  const [form, setForm] = useState(emptyExpense)
+  const [editing, setEditing] = useState(null)
+  const [limit, setLimit] = useState(String(budget?.amount || ''))
+  const [saving, setSaving] = useState(false)
+  const [exporting, setExporting] = useState('')
+  const [search, setSearch] = useState('')
+  const [typeFilter, setTypeFilter] = useState('all')
+  const [categoryFilter, setCategoryFilter] = useState('All')
+  useEffect(() => setLimit(String(budget?.amount || '')), [budget?.amount])
+  const finance = summary || {credit:0,debit:0,balance:0,count:0,categories:[],daily:[]}
+  const spent = finance.debit
+  const remaining = (budget?.amount || 0) - spent
+  const pct = budget?.amount ? Math.min(100, spent/budget.amount*100) : 0
+  const filtered = expenses.filter(x => (typeFilter === 'all' || x.entry_type === typeFilter) && (categoryFilter === 'All' || x.category === categoryFilter) && `${x.title} ${x.category} ${x.notes||''}`.toLowerCase().includes(search.toLowerCase()))
+  const topCategory = finance.categories[0]?.total || 1
+  const maxDay = Math.max(1, ...(finance.daily||[]).map(x=>Math.max(x.credit,x.debit)))
+  const startEdit = item => {setForm({title:item.title,amount:String(item.amount),category:item.category,entry_type:item.entry_type||'debit',notes:item.notes||'',spent_on:item.spent_on});setEditing(item.id);setView('transactions');document.getElementById('transaction-form')?.scrollIntoView({behavior:'smooth',block:'center'})}
+  const clearEdit = () => {setEditing(null);setForm(emptyExpense())}
+  const submit = async e => {
+    e.preventDefault();setSaving(true)
+    try {const payload={...form, amount:Number(form.amount)}
+      if (editing) await onUpdate(editing,payload)
+      else await onCreate(payload)
+      clearEdit()
+    } finally {setSaving(false)}
+  }
+  const exportFile = async format => {
+    setExporting(format)
+    try {await downloadExpenseReport(format,month)} catch(err) {window.alert(err.message)} finally {setExporting('')}
+  }
+  const monthText = new Date(month+'-01T12:00:00').toLocaleDateString('en-IN',{month:'long',year:'numeric'})
+  return <>
+    <SectionHeading eyebrow="YOUR MONEY, CLEARLY" title="Expense & income tracker" subtitle="Track every credit and debit, undo mistakes, and download beautiful reports." action={<input className="month-input" aria-label="Select financial month" type="month" value={month} onChange={e=>setMonth(e.target.value)}/>}/>
+    <div className="finance-top-actions">
+      <div className="finance-tabbar"><button className={view==='dashboard'?'selected':''} onClick={()=>setView('dashboard')}><BarChart3 size={16}/> Dashboard</button><button className={view==='transactions'?'selected':''} onClick={()=>setView('transactions')}><ReceiptText size={16}/> Transactions</button></div>
+      <div className="finance-downloads"><button className="button button-outline" title="Undo last transaction change" onClick={onUndo} disabled={!undoAvailable}><Undo2 size={16}/> Undo</button><button className="button button-soft" onClick={()=>{setView('transactions');clearEdit();setTimeout(()=>document.getElementById('transaction-form')?.scrollIntoView({behavior:'smooth'}),100)}}><Plus size={16}/> Create</button></div>
+    </div>
+    <div className="finance-grid finance-four">
+      <div className="finance-stat"><span className="money-green"><TrendingDown size={20}/></span><p>Money in · Credit</p><strong className="credit-text">+{rupees(finance.credit)}</strong><small>{monthText}</small></div>
+      <div className="finance-stat"><span className="money-orange"><TrendingUp size={20}/></span><p>Money out · Debit</p><strong className="debit-text">−{rupees(finance.debit)}</strong><small>{finance.count} entries total</small></div>
+      <div className="finance-stat"><span><Wallet size={20}/></span><p>Net movement</p><strong className={finance.balance<0?'debit-text':'credit-text'}>{finance.balance<0?'−':'+'}{rupees(Math.abs(finance.balance))}</strong><small>Credit minus debit (not bank balance)</small></div>
+      <div className="finance-stat"><span><Target size={20}/></span><p>Budget remaining</p><strong className={remaining<0?'debit-text':''}>{budget?.amount?rupees(remaining):'Not set'}</strong><small>{budget?.amount?`${Math.round(pct)}% of debit budget used`:'Add your monthly spending limit'}</small></div>
+    </div>
+    {view==='dashboard'&&<>
+      <div className="finance-visuals">
+        <div className="panel finance-dashboard-panel"><div className="panel-heading"><div><h2>Expenses by category</h2><p>Money out during {monthText}</p></div><span className="finance-panel-icon"><BarChart3 size={19}/></span></div>
+          <div className="expense-chart-body">{finance.categories?.length?finance.categories.map((item,i)=><div className="expense-chart-line" key={item.category}><div className="expense-chart-label"><span><i className={`category-dot c${i%4}`}/>{item.category}</span><strong>{rupees(item.total)}</strong></div><div className="expense-chart-track"><div style={{width:`${100*item.total/topCategory}%`}}/></div></div>):<Empty icon={Wallet} title="No spending yet" text="Create your first debit to see category insights."/>}</div>
+        </div>
+        <div className="panel finance-dashboard-panel"><div className="panel-heading"><div><h2>Daily money flow</h2><p>Credit and debit activity</p></div><span className="finance-panel-icon"><Activity size={19}/></span></div>
+          {finance.daily?.length?<div className="daily-money-chart">{finance.daily.map((d,i)=><div className="daily-chart-col" key={d.date} title={`${d.date}: Credit ${rupees(d.credit)}, Debit ${rupees(d.debit)}`}><div className="daily-chart-bars"><i className="bar-credit" style={{height:`${Math.max(d.credit>0?4:0,100*d.credit/maxDay)}%`}}/><i className="bar-debit" style={{height:`${Math.max(d.debit>0?4:0,100*d.debit/maxDay)}%`}}/></div><small>{d.date.slice(-2)}</small></div>)}</div>:<Empty icon={BarChart3} title="No activity yet" text="Your daily money flow will appear here."/>}
+          <div className="finance-legend"><span><i className="legend-credit"/> Credit</span><span><i className="legend-debit"/> Debit</span></div>
+        </div>
+      </div>
+      <div className="panel finance-dashboard-panel finance-bottom-panel"><div className="panel-heading"><div><h2>Budget & downloads</h2><p>Manage limits and export this month's report</p></div></div><div className="finance-budget-row"><form onSubmit={e=>{e.preventDefault();onBudget(Number(limit))}}><label>Monthly debit limit (₹)</label><div className="finance-budget-control"><input type="number" step="0.01" min="0" max="100000000" placeholder="e.g. 10000" value={limit} onChange={e=>setLimit(e.target.value)} required/><button type="submit" className="button button-primary">Save budget</button></div></form><div className="finance-budget-display"><div className="finance-budget-numbers"><span>Debit: {rupees(spent)}</span><span>Limit: {budget?.amount?rupees(budget.amount):'Not set'}</span></div><div className="budget-track"><div style={{width:`${pct}%`,background:remaining<0?'#f07769':undefined}}/></div></div></div>
+        <div className="export-inline"><strong><Download size={16}/> Download report</strong><div>{[['pdf','PDF',FileText],['xlsx','Excel',FileSpreadsheet],['csv','CSV',Download]].map(([fmt,label,Icon])=><button className="button button-outline" disabled={!!exporting} key={fmt} onClick={()=>exportFile(fmt)}><Icon size={16}/>{exporting===fmt?'Preparing...':label}</button>)}</div></div>
+      </div>
+    </>}
+    {view==='transactions'&&<div className="work-grid finance-work-grid"><div className="panel form-panel" id="transaction-form"><div className="panel-heading"><div><h2>{editing?'Edit transaction':'Create transaction'}</h2><p>Credit = money received, Debit = money spent</p></div><span className="form-top-icon"><Plus size={21}/></span></div>
+      <form className="form-stack" onSubmit={submit}><label>Transaction title<input required maxLength={150} placeholder="e.g. Metro, Salary, Savings" value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></label><div className="finance-type-selector"><button type="button" className={form.entry_type==='debit'?'selected debit-selected':''} onClick={()=>setForm({...form,entry_type:'debit'})}><ArrowUpRight size={16}/> Debit · Money out</button><button type="button" className={form.entry_type==='credit'?'selected credit-selected':''} onClick={()=>setForm({...form,entry_type:'credit'})}><ArrowDownRight size={16}/> Credit · Money in</button></div>
+        <div className="form-pair"><label>Amount (₹)<input type="number" min="0.01" max="100000000" step="0.01" required placeholder="250" value={form.amount} onChange={e=>setForm({...form,amount:e.target.value})}/></label><label>Category<select value={form.category} onChange={e=>setForm({...form,category:e.target.value})}>{expenseCategories.map(c=><option key={c}>{c}</option>)}</select></label></div><label>Date<input type="date" required value={form.spent_on} onChange={e=>setForm({...form,spent_on:e.target.value})}/></label><label>Notes (optional)<textarea maxLength={600} rows={3} placeholder="Payment method, description, etc." value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/></label>
+        <div className="finance-form-buttons"><button className="button button-primary" type="submit" disabled={saving}>{saving?'Saving...':editing?'Save changes':'Create transaction'} <ArrowRight size={17}/></button>{editing&&<button type="button" className="button button-outline" onClick={clearEdit}>Cancel</button>}</div></form></div>
+      <div className="panel tasks-panel"><div className="panel-heading"><div><h2>Transaction history</h2><p>{filtered.length} of {expenses.length} transactions · {monthText}</p></div><button className="text-link" disabled={!undoAvailable} onClick={onUndo}><Undo2 size={16}/> Undo last</button></div>
+        <div className="finance-filters"><div className="search-box"><Search size={16}/><input placeholder="Search title, category, notes" value={search} onChange={e=>setSearch(e.target.value)}/></div><select aria-label="Filter transaction type" value={typeFilter} onChange={e=>setTypeFilter(e.target.value)}><option value="all">All types</option><option value="debit">Debits</option><option value="credit">Credits</option></select><select aria-label="Filter category" value={categoryFilter} onChange={e=>setCategoryFilter(e.target.value)}><option value="All">All categories</option>{expenseCategories.map(c=><option key={c}>{c}</option>)}</select></div>
+        {filtered.length?<div className="expense-list">{filtered.map(x=><div className="expense-row" key={x.id}><span className={`expense-icon ${x.entry_type==='credit'?'credit-icon':''}`}>{x.entry_type==='credit'?<ArrowDownRight size={18}/>:<ArrowUpRight size={18}/>}</span><div><strong>{x.title}</strong><small>{x.category} · {new Date(x.spent_on+'T12:00:00').toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})}</small>{x.notes&&<small className="expense-notes">{x.notes}</small>}</div><strong className={`expense-amount ${x.entry_type==='credit'?'credit-text':'debit-text'}`}>{x.entry_type==='credit'?'+':'−'}{rupees(x.amount)}</strong><IconButton icon={Edit3} label="Edit transaction" onClick={()=>startEdit(x)}/><IconButton icon={Trash2} label="Delete transaction" onClick={()=>onDelete(x)}/></div>)}</div>:<Empty icon={Wallet} title="No matching transactions" text="Create a transaction or reset your filters."/>}
+        <div className="finance-history-download"><span>Export all transactions for {monthText}</span><button className="button button-soft" onClick={()=>exportFile('xlsx')}><FileSpreadsheet size={16}/> Download Excel</button></div>
+      </div></div>}
+    <div className="notice finance-note"><ShieldCheck size={19}/><span>Transactions are stored in your local LifePilot database. Undo reverses the latest create, edit or delete action. Net movement is not your actual bank-account balance.</span></div>
   </>
 }
+
 
 function AssistantScreen({ config, messages, setMessages }) {
   const [input,setInput]=useState('')
@@ -156,6 +213,8 @@ function App() {
   const [tasks,setTasks]=useState([])
   const [reminders,setReminders]=useState([])
   const [expenses,setExpenses]=useState([])
+  const [expenseSummary,setExpenseSummary]=useState(null)
+  const [undoAvailable,setUndoAvailable]=useState(false)
   const [budget,setBudget]=useState({amount:0})
   const [config,setConfig]=useState(null)
   const [error,setError]=useState('')
@@ -179,8 +238,8 @@ function App() {
   },[])
   const refresh=useCallback(async()=>{
     try{
-      const [d,t,r,e,b,c]=await Promise.all([api(`/dashboard?month=${month}`),api('/tasks'),api('/reminders'),api(`/expenses?month=${month}`),api(`/budgets/${month}`),api('/config')])
-      setData(d);setTasks(t);setReminders(r);setExpenses(e);setBudget(b);setConfig(c);setError('')
+      const [d,t,r,e,b,c,s,u]=await Promise.all([api(`/dashboard?month=${month}`),api('/tasks'),api('/reminders'),api(`/expenses?month=${month}`),api(`/budgets/${month}`),api('/config'),api(`/expenses/summary?month=${month}`),api('/expenses/undo-status')])
+      setData(d);setTasks(t);setReminders(r);setExpenses(e);setBudget(b);setConfig(c);setExpenseSummary(s);setUndoAvailable(u.available);setError('')
       checkDue()
     }catch(e){setError(e.message)}
   },[month,checkDue])
@@ -193,7 +252,9 @@ function App() {
   const updateTask=(id,body)=>mutate(()=>api(`/tasks/${id}`,{method:'PATCH',body}),'Task updated')
   const createReminder=body=>mutate(()=>api('/reminders',{method:'POST',body}),'Reminder scheduled')
   const ack=async r=>{try{await mutate(()=>api(`/reminders/${r.id}/acknowledge`,{method:'PATCH'}),'Reminder marked done');setAlerts(a=>a.filter(x=>x.id!==r.id))}catch{/* message displayed */}}
-  const createExpense=body=>mutate(()=>api('/expenses',{method:'POST',body}),'Expense saved')
+  const createExpense=body=>mutate(()=>api('/expenses',{method:'POST',body}),'Transaction created · Undo available')
+  const editExpense=(id,body)=>mutate(()=>api(`/expenses/${id}`,{method:'PATCH',body}),'Transaction updated · Undo available')
+  const undoExpense=()=>mutate(()=>api('/expenses/undo',{method:'POST'}),'Last transaction change reversed')
   const setMonthlyBudget=amount=>mutate(()=>api(`/budgets/${month}`,{method:'PUT',body:{amount}}),'Budget updated')
   const enableNotify=async()=>{if(!('Notification' in window)){setNotice('This browser does not support desktop notifications.');return}const result=await Notification.requestPermission();setPermission(result);setNotice(result==='granted'?'Browser notifications are enabled.':'Notifications were not enabled.')}
   const jumpToAssistant=()=>{setTab('assistant');setMessages(m=>[...m, {role:'assistant',text:'Ready to plan? Choose “Plan my day” on the right, or ask me a question.',mode:'offline'}])}
@@ -202,10 +263,10 @@ function App() {
         {tab==='overview'&&<Overview data={data} onTab={setTab} onToggle={toggle} onNewTask={()=>setTab('tasks')} onAsk={jumpToAssistant}/>}
         {tab==='tasks'&&<TaskScreen tasks={tasks} onCreate={createTask} onUpdate={updateTask} onToggle={toggle} onDelete={t=>askConfirmDelete(t,`/tasks/${t.id}`)}/>}
         {tab==='reminders'&&<ReminderScreen reminders={reminders} onCreate={createReminder} onAck={ack} onDelete={r=>askConfirmDelete(r,`/reminders/${r.id}`)} onEnableNotify={enableNotify} permission={permission}/>}
-        {tab==='expenses'&&<ExpenseScreen expenses={expenses} dashboard={data} budget={budget} month={month} setMonth={setMonth} onCreate={createExpense} onDelete={x=>askConfirmDelete(x,`/expenses/${x.id}`)} onBudget={setMonthlyBudget}/>}
+        {tab==='expenses'&&<ExpenseScreen expenses={expenses} summary={expenseSummary} budget={budget} month={month} setMonth={setMonth} onCreate={createExpense} onUpdate={editExpense} onUndo={undoExpense} undoAvailable={undoAvailable} onDelete={x=>askConfirmDelete(x,`/expenses/${x.id}`)} onBudget={setMonthlyBudget}/>}
         {tab==='assistant'&&<AssistantScreen config={config} messages={messages} setMessages={setMessages}/>}
         {tab==='settings'&&<SettingsScreen config={config} permission={permission} onEnableNotify={enableNotify} onReload={refresh}/>}
-        <footer className="footer">LifePilot v1.0 <span>·</span> Make room for what matters.</footer>
+        <footer className="footer">LifePilot v2.0 <span>·</span> Make room for what matters.</footer>
       </main>
     </div>
     {notice&&<div className="toast"><CheckCircle2 size={19}/>{notice}<IconButton icon={X} label="Dismiss notice" onClick={()=>setNotice('')}/></div>}
