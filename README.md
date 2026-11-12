@@ -198,3 +198,53 @@ Authentication and user accounts; recurring reminders; voice commands; calendar 
 ---
 
 **Educational local-first project** built for learning full-stack development. Core tasks, budgets and reminders require no paid AI service. Data is stored locally unless you explicitly enable an external AI or SMTP provider.
+
+---
+
+## LifePilot v2.0 — Expense & Income Tracker upgrade (November 2026)
+
+The old task and reminder modules continue to work. The Expenses section is now a full money manager:
+
+- **Expense dashboard:** monthly credit (money in), debit (money out), net movement, budget remaining, debit category bars and day-by-day activity.
+- **Create / Edit / Delete:** transactions have amount, title, category, date, notes and type (credit or debit).
+- **13 requested categories:** Food, Study, Travel, Shopping, Bank, House Rent, Personal, Gym, Health, Drink, Petrol, Clothes, Other. Older `Bills`/`Education` labels are also readable to preserve existing data.
+- **Undo:** click Undo to reverse the most recent expense create, update, or delete. The history is kept in SQLite and survives reloads. Undo is for expense changes, not every action elsewhere in LifePilot.
+- **Download selected month's report:** PDF, Excel (`.xlsx` with Dashboard and Transactions sheets), or CSV. CSV and XLSX treat entered strings as text to reduce formula-injection risk.
+- **Non-destructive database migration:** older expense records are kept; they become debit entries. Database stays at `backend/lifepilot.db` unless overridden.
+- **Standalone browser website:** `docs/index.html` works independently of FastAPI using your browser's localStorage. It includes the above money-tracking basics, undo, CSV, true XLSX, JSON backup/import, and `Print / Save PDF` via the browser print dialog. For this website, undo and data persistence are stored locally in the browser. Data does NOT sync with the Python/SQLite version.
+
+### Run complete React + Python project
+
+On Windows, extract the ZIP and double-click `START_BACKEND.bat`, then `START_FRONTEND.bat`. Open `http://127.0.0.1:5173` and choose **Expenses** in the sidebar, then **Dashboard** or **Transactions**.
+
+Backend REST routes for the upgrade:
+
+| Method | API route | Purpose |
+| --- | --- | --- |
+| GET | `/api/expenses?month=YYYY-MM` | List month's active transactions |
+| POST | `/api/expenses` | Create credit or debit |
+| PATCH | `/api/expenses/{id}` | Edit a transaction |
+| DELETE | `/api/expenses/{id}` | Soft-delete transaction (undoable) |
+| POST | `/api/expenses/undo` | Undo latest transaction edit/create/delete |
+| GET | `/api/expenses/undo-status` | Show whether undo is possible |
+| GET | `/api/expenses/summary?month=YYYY-MM` | Statistics, categories, daily totals |
+| GET | `/api/expenses/categories` | 13 default categories |
+| GET | `/api/expenses/export?month=YYYY-MM&format=pdf` | Download a PDF |
+| GET | `/api/expenses/export?month=YYYY-MM&format=xlsx` | Download actual Excel workbook |
+| GET | `/api/expenses/export?month=YYYY-MM&format=csv` | Download CSV |
+
+Budget APIs remain `/api/budgets/{month}`. Budget counts debits, not credits. "Net movement" is credits minus debits for a date range; it is NOT actual bank-account balance. The full project is intentionally localhost-only until proper accounts, authentication and HTTPS are implemented.
+
+### Open standalone expense-tracker website
+
+Open `docs/index.html` (or the separate `LifePilot_Expense_Tracker_Website.html` download) in Chrome or Edge; no installation or server is required. Create a credit and debit; the charts update instantly. Press Undo after adding, editing or deleting. Open Reports to download an Excel, CSV or JSON file, or click **Print / Save PDF** and choose your browser's PDF printer.
+
+**Important:** The standalone website saves records to your current browser's localStorage only. Export a JSON backup regularly. It is not connected to your bank and it does not sync between devices or with the Python backend.
+
+### Publish the standalone website using GitHub Pages
+
+GitHub Pages hosts static files but not Python/FastAPI. To publish the independent expense-tracker version: upload the `docs/index.html` file to your GitHub repository, then open the repository's **Settings → Pages → Build and deployment**. Select **Deploy from a branch** → `main` → `/docs`, then Save. The URL will typically be `https://<username>.github.io/<repository>/` once GitHub confirms publishing; verify the actual URL shown by GitHub Pages before sharing it. **Do not publish `backend/lifepilot.db` or any `.env` or API-key files.** To host the full React + FastAPI version publicly, you need separate backend hosting with user authentication and a persistent database.
+
+### Tests and compatibility
+
+Run the backend tests with `cd backend && python -m pytest -q` (install `pytest` first if missing). Backend tests cover credit/debit, categories, edit, undo, delete, summary and all three export formats. React source was checked for JSX syntax but a full Vite dependency install/build was not available in this environment; run `npm install && npm run build` on your computer.
