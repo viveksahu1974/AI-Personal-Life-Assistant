@@ -36,3 +36,18 @@ export const todayLocal = () => {
 export const monthLocal = () => todayLocal().slice(0, 7)
 export const rupees = value => '₹' + Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 2, minimumFractionDigits: 0 })
 export const niceDate = value => value ? new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'No due date'
+
+
+export async function downloadExpenseReport(format, month) {
+  const response = await fetch(`${apiUrl}/api/expenses/export?month=${encodeURIComponent(month)}&format=${encodeURIComponent(format)}`)
+  if (!response.ok) throw new Error(`Unable to export ${format.toUpperCase()} report (${response.status})`)
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `LifePilot_Transactions_${month}.${format}`
+  document.body.append(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
