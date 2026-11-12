@@ -1,0 +1,39 @@
+LIFEPILOT 2.0 - EXPENSE TRACKER (HINGLISH)
+========================================
+
+OPTION A - BINA INSTALLATION KE WEBSITE (QUICK START)
+1. LifePilot/docs/index.html ko Chrome ya Edge me open karo.
+2. Top right 'Create transaction' click karo.
+3. Credit (paise aaye) ya Debit (paise kharch hue) select karo.
+4. Title, amount, category, date fill karke save karo.
+5. Dashboard pe income, spending, net balance movement aur graphs dekho.
+6. Galat transaction create, edit ya delete ho gaya? 'Undo' click karo.
+7. Reports pe jao: Excel (.xlsx), CSV, JSON backup ya Print/Save PDF choose karo.
+8. Settings se monthly debit budget set karo.
+
+CATEGORIES:
+Food, Study, Travel, Shopping, Bank, House Rent, Personal,
+Gym, Health, Drink, Petrol, Clothes, Other.
+
+IMPORTANT: Browser website ka data localStorage me save hota hai. Dusre
+browser/device me automatic sync nahi hota. JSON backup download karte
+raho. PDF export ke liye browser print me 'Save as PDF' select karo.
+
+OPTION B - COMPLETE REACT + PYTHON LIFEPILOT
+1. Python 3.10+ and Node.js 20.19+ install karo.
+2. START_BACKEND.bat par double click karo.
+3. START_FRONTEND.bat par double click karo.
+4. http://127.0.0.1:5173 open karo.
+5. Sidebar -> Expenses -> Dashboard / Transactions.
+6. Excel/PDF/CSV export website se direct download hoga.
+7. Undo server-backed hai; SQLite DB me history rahegi.
+
+Note: Purane expense records delete nahi honge. Old expenses ko debit
+mana jayega. Net movement bank balance nahi hai: credit - debit hai.
+
+ONLINE PUBLISHING:
+GitHub Pages sirf standalone docs/index.html ko host kar sakta hai.
+GitHub repo me docs/index.html upload -> Settings -> Pages -> main /docs.
+Actual live link GitHub Pages settings me confirm karna.
+
+Source project: https://github.com/viveksahu1974/AI-Personal-Life-Assistant
